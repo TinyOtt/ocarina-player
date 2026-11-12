@@ -71,7 +71,7 @@
   #panel.imp{height:min(600px,74vh)}
   #panel.sheet{height:min(430px,55vh)}
   #sheetview{flex:1;min-height:0;flex-direction:column;display:flex}
-  #sheetWrap{flex:1;min-height:0;overflow:auto;margin:0 8px 8px;border-radius:8px;background:#f7f4ea;touch-action:pan-y}
+  #sheetWrap{flex:1;min-height:0;overflow:auto;margin:0 8px 8px;border-radius:8px;background:#f7f4ea;touch-action:pan-x pan-y}
   #sheetCv{display:block}
   #sheetInfo{font-size:12px;opacity:.75;padding:2px 10px 6px}
   #impview{flex:1;min-height:0;flex-direction:column;display:flex}
@@ -377,13 +377,21 @@ const METERS=[
 ];
 METERS.forEach(m=>{m.l=m.l||m.id;m.short=m.num+'/'+m.den+(m.g.length>1&&m.l!==m.id?' '+m.g.join('+'):'');});
 const meterById=id=>METERS.find(m=>m.id===id)||METERS[0];
-let S={notes:[],bpm:100,bars:8,meters:[{bar:0,id:'4/4'}]};
+let S={notes:[],bpm:100,bars:8,meters:[{bar:0,id:'4/4'}],layout:null};
+// layout copied from an imported sheet: key signatures, the bars that start each printed line, double bars, a pickup bar
+function cleanLayout(L){
+  if(!L||typeof L!=='object')return null;
+  const nums=a=>Array.isArray(a)?a.map(v=>v|0).filter(v=>v>=0):[];
+  const keys=Array.isArray(L.keys)?L.keys.filter(k=>k&&k.bar>=0).map(k=>({bar:k.bar|0,k:clamp(k.k|0,-7,7)})):[];
+  return {from:Math.max(0,L.from|0),sys:nums(L.sys),dbl:nums(L.dbl),pickup:!!L.pickup,keys};
+}
 try{
   const d=JSON.parse(localStorage.getItem('ocSong3')||'null');
   if(d&&Array.isArray(d.notes)){
-    S.notes=d.notes.filter(x=>x&&isFinite(x.t)&&x.t>=0&&x.len>0&&x.n>=-3&&x.n<=15).map(x=>({t:+x.t,len:+x.len,n:x.n|0}));
+    S.notes=d.notes.filter(x=>x&&isFinite(x.t)&&x.t>=0&&x.len>0&&x.n>=-3&&x.n<=15).map(x=>{const o={t:+x.t,len:+x.len,n:x.n|0};if(isFinite(x.sd)&&x.sn===o.n){o.sd=x.sd|0;o.sn=o.n;}return o;});
     S.bpm=clamp((d.bpm|0)||100,40,240);S.bars=clamp((d.bars|0)||8,1,128);
     if(Array.isArray(d.meters)&&d.meters.length)S.meters=d.meters.filter(x=>x&&x.bar>=0).map(x=>({bar:x.bar|0,id:meterById(x.id).id}));
+    S.layout=cleanLayout(d.layout);
   }else{
     const o=JSON.parse(localStorage.getItem('ocSong')||'null');      // migrate the old 8th-note step chart
     if(o&&Array.isArray(o.song)){
@@ -835,7 +843,7 @@ let clrArm=0;
 function clearSong(ev){
   const b=ev.currentTarget;
   if(Date.now()-clrArm>2500){clrArm=Date.now();const t=b.textContent;b.textContent='Sure?';setTimeout(()=>{b.textContent=t;},2500);return;}
-  clrArm=0;stopPB();rec=false;S.notes=[];sel=null;cursor=0;changed();updButtons();msg('');b.textContent='Clear';
+  clrArm=0;stopPB();rec=false;S.notes=[];S.layout=null;sel=null;cursor=0;changed();updButtons();msg('');b.textContent='Clear';
 }
 $('clr').addEventListener('click',clearSong);$('rclr').addEventListener('click',clearSong);
 $('flip').addEventListener('click',()=>{flipped=!flipped;});
@@ -849,9 +857,20 @@ rBtn.addEventListener('click',()=>{pIdx=0;showProgress();renderSeq();});
 
 /* ---------- sheet music view of the current recording ---------- */
 const sheetCv=$('sheetCv'),sheetWrap=$('sheetWrap');let sheetHits=[];
-const LETTER=[0,0,1,1,2,3,3,4,4,5,5,6],SHARP=[0,1,0,1,0,0,1,0,1,0,1,0];   // C C# D D# E F F# G G# A A# B
-function spell(n){const m=62+n,pc=((m%12)+12)%12,oct=Math.floor(m/12)-1;return {d:oct*7+LETTER[pc],sh:SHARP[pc],key:oct*7+LETTER[pc]};}
-const DURS=[[96,0,0],[72,1,1],[48,1,0],[36,2,1],[24,2,0],[18,3,1],[12,3,0],[9,4,1],[6,4,0],[3,5,0]];   // len, kind(0 whole 1 half 2 q 3 8th 4 16th 5 32nd), dotted
+const NAT=[0,2,4,5,7,9,11],KS_SHARP=[3,0,4,1,5,2,6],KS_FLAT=[6,2,5,1,4,0,3];   // letters 0=C … 6=B; order sharps / flats enter a key
+const keyAltOf=k=>{const a=[0,0,0,0,0,0,0];if(k>0)KS_SHARP.slice(0,k).forEach(l=>a[l]=1);if(k<0)KS_FLAT.slice(0,-k).forEach(l=>a[l]=-1);return a;};
+// spell a note in a key: a note of the key first, then a natural, then a sharp (sharp keys) or flat (flat keys)
+function spellK(n,k){
+  const m=62+n,pc=((m%12)+12)%12,ka=keyAltOf(k);let best=null,bs=9;
+  for(let L=0;L<7;L++){let a=pc-NAT[L];if(a>6)a-=12;if(a<-6)a+=12;if(Math.abs(a)>1)continue;
+    const sc=a===ka[L]?0:a===0?1:(a===(k<0?-1:1))?2:3;if(sc<bs){bs=sc;best={L,a};}}
+  const oct=Math.floor((m-best.a)/12)-1;return {d:oct*7+best.L,alt:best.a};
+}
+function spellNote(x,k){   // the letter the imported sheet printed, while the note keeps that pitch
+  if(x.sd!==undefined&&x.sn===x.n){const L=((x.sd%7)+7)%7,a=62+x.n-(12*(Math.floor(x.sd/7)+1)+NAT[L]);if(Math.abs(a)<=1)return {d:x.sd,alt:a};}
+  return spellK(x.n,k);
+}
+const keySigAt=b=>{let k=0;if(S.layout)S.layout.keys.forEach(x=>{if(x.bar<=b)k=x.k;});return k;};
 function splitLen(L,pos){   // pieces that read well; triplets (16, 8) shown as the plain value with a 3
   const out=[];
   if(L===16||L===8||L===32){out.push({len:L,kind:L===32?1:L===16?2:3,dot:0,trip:1});return out;}
@@ -859,9 +878,20 @@ function splitLen(L,pos){   // pieces that read well; triplets (16, 8) shown as 
   if(L>0)out.push({len:L,kind:5,dot:0});
   return out;
 }
+const DURS=[[96,0,0],[72,1,1],[48,1,0],[36,2,1],[24,2,0],[18,3,1],[12,3,0],[9,4,1],[6,4,0],[3,5,0]];   // len, kind(0 whole 1 half 2 q 3 8th 4 16th 5 32nd), dotted
+function drawAcc(g,a,x,y,sp,ink){   // ♯ ♭ ♮ drawn as strokes, so every device shows the same thing
+  g.save();g.strokeStyle=ink;g.fillStyle=ink;g.lineCap='butt';
+  if(a===1){g.lineWidth=1.1;g.beginPath();g.moveTo(x-2,y-sp*1.3);g.lineTo(x-2,y+sp*1.2);g.moveTo(x+2,y-sp*1.4);g.lineTo(x+2,y+sp*1.1);g.stroke();
+    g.lineWidth=2.4;g.beginPath();g.moveTo(x-4.5,y-sp*0.3);g.lineTo(x+4.5,y-sp*0.6);g.moveTo(x-4.5,y+sp*0.55);g.lineTo(x+4.5,y+sp*0.25);g.stroke();}
+  else if(a===-1){g.lineWidth=1.2;g.beginPath();g.moveTo(x-3,y-sp*1.9);g.lineTo(x-3,y+sp*0.5);g.stroke();
+    g.lineWidth=1.8;g.beginPath();g.moveTo(x-3,y+sp*0.5);g.bezierCurveTo(x+6,y-sp*0.2,x+4,y-sp*0.9,x-3,y-sp*0.3);g.stroke();}
+  else{g.lineWidth=1.1;g.beginPath();g.moveTo(x-2.5,y-sp*1.4);g.lineTo(x-2.5,y+sp*0.55);g.moveTo(x+2.5,y-sp*0.55);g.lineTo(x+2.5,y+sp*1.4);g.stroke();
+    g.lineWidth=2.2;g.beginPath();g.moveTo(x-2.5,y-sp*0.2);g.lineTo(x+2.5,y-sp*0.45);g.moveTo(x-2.5,y+sp*0.55);g.lineTo(x+2.5,y+sp*0.3);g.stroke();}
+  g.restore();
+}
 function drawSheet(fromHi){
-  const W=sheetWrap.clientWidth;if(!W)return;
-  const sp=10,staffH=4*sp,sysH=staffH+9*sp,left=12,right=W-12;
+  const W0=sheetWrap.clientWidth;if(!W0)return;
+  const sp=10,staffH=4*sp,sysH=staffH+9*sp,left=12,LY=S.layout;
   // build events per bar
   const bars=[];let lastEnd=0;S.notes.forEach(x=>lastEnd=Math.max(lastEnd,x.t+x.len));
   const nb=lastEnd?Math.min(BT.length,barAt(lastEnd-1).b+1):1;
@@ -871,11 +901,20 @@ function drawSheet(fromHi){
       if(s0>t)splitLen(s0-t,t-B.start).forEach(p=>ev.push(Object.assign(p,{rest:1})));
       const ps=splitLen(e0-s0,s0-B.start);ps.forEach((p,k)=>ev.push(Object.assign(p,{x,tie:k<ps.length-1||e0<x.t+x.len,cont:k>0||s0>x.t})));t=e0;});
     if(t<B.start+B.len)splitLen(B.start+B.len-t,t-B.start).forEach(p=>ev.push(Object.assign(p,{rest:1})));
+    if(bi===0&&LY&&LY.pickup&&LY.from===0){while(ev.length&&ev[0].rest)ev.shift();}   // a pickup bar: only its notes, like the printed sheet
+    const k=keySigAt(bi),newKey=bi===0||keySigAt(bi-1)!==k;
     const wd=ev.reduce((a,e)=>a+(e.rest?16:22)+Math.min(26,e.len*0.5)+(e.dot?6:0),0)+(B.show||bi===0?26:0)+12;
-    bars.push({B,ev,wd});}
-  // lay bars out into systems
-  const sys=[];let row=[],used=0;const clefW=34;
-  bars.forEach(b=>{if(row.length&&used+b.wd>right-left-clefW){sys.push(row);row=[];used=0;}row.push(b);used+=b.wd;});if(row.length)sys.push(row);
+    bars.push({B,ev,wd,k,newKey,dbl:!!(LY&&LY.dbl.includes(bi))});}
+  // lay bars out into lines: the imported picture's own line breaks when there are some, otherwise as many as fit
+  const brk=new Set(LY?LY.sys:[]),forced=bi=>LY&&bi>=LY.from;
+  const ksW=k=>Math.abs(k)*7+(k?6:0),clefW=34;
+  const sys=[];let row=[],used=0;
+  bars.forEach((b,bi)=>{const avail=W0-24-clefW-ksW(b.k);
+    if(row.length&&(brk.has(bi)||(forced(bi)&&bi===LY.from)||(!forced(bi)&&used+b.wd>avail))){sys.push(row);row=[];used=0;}
+    row.push(b);used+=b.wd;});if(row.length)sys.push(row);
+  // a copied line can be wider than the screen: squeeze a little, then let the sheet scroll sideways
+  const lineW=row=>clefW+ksW(row[0].k)+row.reduce((a,b)=>a+b.wd,0);
+  const W=Math.max(W0,...sys.map(r=>Math.ceil(lineW(r)*0.8)+24)),right=W-12;
   const H=Math.max(sheetWrap.clientHeight-2,sys.length*sysH+20),dpr=Math.min(devicePixelRatio||1,2);
   sheetCv.style.width=W+'px';sheetCv.style.height=H+'px';sheetCv.width=Math.round(W*dpr);sheetCv.height=Math.round(H*dpr);
   const g=sheetCv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
@@ -884,16 +923,20 @@ function drawSheet(fromHi){
   const ink='#1d1d24';
   sys.forEach((row,si)=>{
     const top=si*sysH+3.5*sp+10,bot=top+staffH,yOf=d=>bot-(d-30)*sp/2;   // E4 (d=30) sits on the bottom line
-    const tot=row.reduce((a,b)=>a+b.wd,0),fill=si<sys.length-1?(right-left-clefW)/tot:Math.min(1.6,(right-left-clefW)/tot);
-    let rowEnd=left+clefW+tot*fill;
+    const kW=ksW(row[0].k),tot=row.reduce((a,b)=>a+b.wd,0),room=right-left-clefW-kW;
+    const fill=si<sys.length-1||forced(row[0].B.b)?room/tot:Math.min(1.6,room/tot);
+    let rowEnd=left+clefW+kW+tot*fill;
     g.strokeStyle=ink;g.lineWidth=1;for(let k=0;k<5;k++){g.beginPath();g.moveTo(left,top+k*sp);g.lineTo(rowEnd,top+k*sp);g.stroke();}
     // treble clef (drawn, so it doesn't depend on fonts)
     {const cx=left+12;g.lineWidth=2;g.beginPath();g.moveTo(cx+2,bot+sp*1.2);g.bezierCurveTo(cx-6,bot+sp*1.6,cx-6,bot+sp*0.4,cx,bot+sp*0.6);
       g.lineTo(cx+3,top-sp*1.2);g.bezierCurveTo(cx+10,top-sp*0.2,cx-8,top+sp*1.6,cx-7,top+sp*2.6);g.bezierCurveTo(cx-6,bot+sp*0.2,cx+10,bot,cx+9,top+sp*2.4);
       g.bezierCurveTo(cx+8,top+sp*1.4,cx-3,top+sp*1.6,cx-1,top+sp*2.8);g.stroke();g.lineWidth=1;}
-    let x=left+clefW;
+    const drawKey=(k,x0)=>{const ds=k>0?[38,35,39,36,33,37,34]:[34,37,33,36,32,35,31];for(let i=0;i<Math.abs(k);i++)drawAcc(g,k>0?1:-1,x0+4+i*7,yOf(ds[i]),sp,ink);};
+    drawKey(row[0].k,left+clefW-4);
+    let x=left+clefW+kW;
     row.forEach((b,bi)=>{
-      const B=b.B,acc={};let bx=x;
+      const B=b.B,cur=keyAltOf(b.k),acc={};let bx=x;
+      if(b.newKey&&bi>0&&b.k!==0){drawKey(b.k,bx-2);}
       if(B.show||B.b===0){g.fillStyle=ink;g.font='bold 17px Georgia,serif';g.textAlign='center';g.textBaseline='middle';
         g.fillText(String(B.m.num),bx+10,top+sp);g.fillText(String(B.m.den),bx+10,top+3*sp);bx+=26;}
       const scaleX=fill;let px=bx+6*scaleX;
@@ -901,21 +944,21 @@ function drawSheet(fromHi){
         const ew=((e.rest?16:22)+Math.min(26,e.len*0.5)+(e.dot?6:0))*scaleX,cx=px+8;
         if(e.rest)drawRest(g,e,cx,top,sp,ink);
         else{
-          const sn=spell(e.x.n),y=yOf(sn.d),hi=e.x===lastHi,hollow=e.kind<=1;
-          const prev=acc[sn.d];let accTxt='';if(sn.sh&&prev!==1)accTxt='♯';else if(!sn.sh&&prev===1)accTxt='♮';
-          if(!e.cont)acc[sn.d]=sn.sh;
+          const sn=spellNote(e.x,b.k),y=yOf(sn.d),hi=e.x===lastHi,hollow=e.kind<=1;
+          const now=acc[sn.d]!==undefined?acc[sn.d]:cur[((sn.d%7)+7)%7],showAcc=!e.cont&&sn.alt!==now;
+          if(!e.cont)acc[sn.d]=sn.alt;
           if(hi){g.save();g.fillStyle='rgba(255,200,40,.35)';g.shadowColor='#ffb800';g.shadowBlur=14;g.beginPath();g.arc(cx,y,sp*1.25,0,7);g.fill();g.restore();hiPos={x:cx,y};}
           g.strokeStyle=ink;g.fillStyle=ink;
           for(let d=28;d>=sn.d;d-=2){g.beginPath();g.moveTo(cx-9,yOf(d));g.lineTo(cx+9,yOf(d));g.stroke();}   // ledger lines below
           for(let d=40;d<=sn.d;d+=2){g.beginPath();g.moveTo(cx-9,yOf(d));g.lineTo(cx+9,yOf(d));g.stroke();}   // above
-          if(accTxt&&!e.cont){g.font='15px Georgia,serif';g.textAlign='center';g.textBaseline='middle';g.fillText(accTxt,cx-13,y);}
+          if(showAcc)drawAcc(g,sn.alt,cx-14,y,sp,ink);
           const col=hi?'#c47a00':ink;g.fillStyle=col;g.strokeStyle=col;
           g.save();g.translate(cx,y);g.rotate(-0.35);g.beginPath();g.ellipse(0,0,sp*0.62,sp*0.42,0,0,7);
           if(hollow){g.lineWidth=1.8;g.stroke();}else g.fill();g.restore();
           if(e.kind>=1){const up=sn.d<34,sx=up?cx+sp*0.58:cx-sp*0.58,ey=up?y-3.4*sp:y+3.4*sp;g.lineWidth=1.3;g.beginPath();g.moveTo(sx,y);g.lineTo(sx,ey);g.stroke();
             for(let f=0;f<Math.max(0,e.kind-2);f++){const fy=ey+(up?1:-1)*f*sp*0.8;g.lineWidth=2.2;g.beginPath();g.moveTo(sx,fy);g.quadraticCurveTo(sx+sp*0.9,fy+(up?1:-1)*sp*0.9,sx+sp*0.6,fy+(up?1:-1)*sp*1.9);g.stroke();}
             g.lineWidth=1;}
-          if(e.dot){g.beginPath();g.arc(cx+sp*0.95,y-((sn.d%2)?sp*0.5:0)+((sn.d%2)?0:0),1.8,0,7);g.fill();}
+          if(e.dot){g.beginPath();g.arc(cx+sp*0.95,y-((sn.d%2)?sp*0.5:0),1.8,0,7);g.fill();}
           if(e.trip){g.font='italic 10px Georgia,serif';g.textAlign='center';g.fillText('3',cx,sn.d<34?y-3.9*sp:y+3.9*sp);}
           if(e.tie){g.lineWidth=1.2;g.beginPath();const tx=cx+ew,dy=sn.d<34?1:-1;g.moveTo(cx+4,y+dy*sp*0.7);g.quadraticCurveTo((cx+tx)/2,y+dy*sp*1.5,tx-4,y+dy*sp*0.7);g.stroke();g.lineWidth=1;}
           if(!e.cont){const lab=glyph(e.x.n);g.font=(hi?'bold ':'')+'11px system-ui,sans-serif';g.textAlign='center';g.textBaseline='top';
@@ -924,11 +967,16 @@ function drawSheet(fromHi){
           sheetHits.push({x:cx,y,note:e.x});
         }
         px+=ew;});
-      x+=b.wd*fill;g.strokeStyle=ink;g.lineWidth=1.2;g.beginPath();g.moveTo(x,top);g.lineTo(x,bot);g.stroke();g.lineWidth=1;
-      g.fillStyle='#777';g.font='9px system-ui,sans-serif';g.textAlign='left';g.textBaseline='bottom';if(bi===0)g.fillText(String(B.b+1),left,top-1.5*sp);
+      x+=b.wd*fill;g.strokeStyle=ink;
+      const last=B.b===bars.length-1;
+      if(b.dbl||last){g.lineWidth=1.2;g.beginPath();g.moveTo(x-(last?6:4),top);g.lineTo(x-(last?6:4),bot);g.stroke();   // double bar (thin + thick at the very end)
+        g.lineWidth=last?3.5:1.2;g.beginPath();g.moveTo(x-(last?1.75:0),top);g.lineTo(x-(last?1.75:0),bot);g.stroke();}
+      else{g.lineWidth=1.2;g.beginPath();g.moveTo(x,top);g.lineTo(x,bot);g.stroke();}
+      g.lineWidth=1;g.fillStyle='#777';g.font='9px system-ui,sans-serif';g.textAlign='left';g.textBaseline='bottom';if(bi===0)g.fillText(String(B.b+1),left,top-1.5*sp);
     });
   });
-  if(fromHi&&hiPos){const vy=hiPos.y-sheetWrap.scrollTop;if(vy<30||vy>sheetWrap.clientHeight-50)sheetWrap.scrollTop=hiPos.y-sheetWrap.clientHeight*0.4;}
+  if(fromHi&&hiPos){const vy=hiPos.y-sheetWrap.scrollTop;if(vy<30||vy>sheetWrap.clientHeight-50)sheetWrap.scrollTop=hiPos.y-sheetWrap.clientHeight*0.4;
+    const vx=hiPos.x-sheetWrap.scrollLeft;if(vx<30||vx>sheetWrap.clientWidth-30)sheetWrap.scrollLeft=hiPos.x-sheetWrap.clientWidth*0.4;}
 }
 function drawRest(g,e,cx,top,sp,ink){
   g.fillStyle=ink;g.strokeStyle=ink;
@@ -1471,7 +1519,7 @@ const OMR=(()=>{
               // (pieces of a note head that line removal cut off from the stem still count: they are small shapes)
               const mine=l=>l===me||(l&&P.comps[l].h<1.3*s&&P.comps[l].w<2*s);
               for(let xx=Math.max(0,x-hw);xx<=Math.min(W-1,x+hw);){if(!mine(plab[y*W+xx])){xx++;continue;}
-                let e=xx;while(e+1<W&&mine(plab[y*W+e+1])&&e-xx<3*s)e++;const long=e-xx+1>hw;   // a long thin run is a tie or slur crossing the line
+                let e=xx,a0=xx;while(e+1<W&&mine(plab[y*W+e+1])&&e-xx<3*s)e++;while(a0>0&&mine(plab[y*W+a0-1])&&xx-a0<3*s)a0--;const long=e-a0+1>hw;   // a long thin run is a tie or slur crossing the line
                 for(let k=xx;k<=Math.min(e,x+hw);k++)if(!long||thick(k,y))c++;xx=e+1;}
               if(c>lim){ok=false;down=false;break;}}}
         }
@@ -1481,8 +1529,8 @@ const OMR=(()=>{
     });
     {let i=0,sys=0;while(i<staves.length){let j=i;while(link.has(j)&&j+1<staves.length)j++;for(let k=i;k<=j;k++){staves[k].sys=sys;staves[k].pos=k-i;staves[k].sysN=j-i+1;}sys++;i=j+1;}res.systems=sys;}
     // merge double bar lines
-    const bars=items.filter(i=>i.kind==='bar').sort((a,b)=>a.x-b.x);
-    bars.forEach((b,i)=>{const n=bars[i+1];if(n&&n.st===b.st&&n.x-b.x<1.2*b.st.sp)n.dup=true;});
+    staves.forEach(st=>{const bars=items.filter(i=>i.kind==='bar'&&i.st===st).sort((a,b)=>a.x-b.x);
+      bars.forEach((b,i)=>{const n=bars[i+1];if(n&&n.x-b.x<1.2*st.sp){n.dup=true;b.dbl=true;}});});
     // per head: stem, beams/flags, dot, accidental
     const {softLR}=ctx,atS=(x,y)=>x>=0&&y>=0&&x<W&&y<H&&(inkLR[y*W+x]||(ctx.faint&&softLR[y*W+x]));
     const vrun=(x,y)=>{if(!atS(x,y))return null;let t=y,b=y;while(atS(x,t-1))t--;while(atS(x,b+1))b++;return [t,b];};
@@ -1549,7 +1597,7 @@ const OMR=(()=>{
         const cx=Math.round((n.hx0+n.hx1)/2),wide=(y0,dy)=>{let y=y0;while(y>0&&y<H-1&&!ctx.ink[y*W+cx]&&Math.abs(y-y0)<0.5*s)y+=dy;if(!ctx.ink[y*W+cx])return false;
           let l=cx,r=cx;while(l>0&&ctx.ink[y*W+l-1]&&cx-l<3*s)l--;while(r<W-1&&ctx.ink[y*W+r+1]&&r-cx<3*s)r++;return r-l>2.2*s&&!st0line(y);};
         const st0line=y=>n.st.ys.some(ly=>Math.abs(ly-y)<=Math.max(1.5,n.st.thick));   // staff lines don't count
-        if(wide(n.hy0-1,-1)||wide(n.hy1+1,1)){n.drop=true;continue;}}
+        if(n.hy1-n.hy0+1<0.4*s||wide(n.hy0-1,-1)||wide(n.hy1+1,1)){n.drop=true;continue;}}   // (a note's hole is rounder than a sliver under a tie)
       const xs=[];for(let x=Math.round(Math.min(n.x1-0.6*s,n.x+0.15*s));x<=Math.max(n.x1+(n.hollow?0.6:0.3)*s,n.x+0.9*s);x++)xs.push(x);for(let x=Math.round(Math.min(n.x0-0.3*s,n.x-0.9*s));x<=Math.max(n.x0+0.6*s,n.x-0.15*s);x++)xs.push(x);
       for(let i=xs.length-1;i>=0;i--)if(barXs.some(bx=>Math.abs(bx-xs[i])<=0.3*s))xs.splice(i,1);   // a bar line is nobody's stem
       for(const x of xs)for(let y=Math.round(n.y-0.5*s);y<=n.y;y++){const r=vrun(x,y);if(r&&n.y-r[0]>=2.2*s&&(!stem||n.y-r[0]>stem.len))stem={x,end:r[0],dir:-1,len:n.y-r[0]};}
@@ -1623,6 +1671,7 @@ const OMR=(()=>{
         const dx=B.x-A.x;if(dx<1.4*s||dx>16*s)continue;
         if(items.some(it=>it.kind==='bar'&&it.st===st&&it.x>A.x&&it.x<B.x)&&dx>9*s)continue;
         for(const side of [1,-1]){
+          if(A.stem&&B.stem&&A.stem.dir===side&&B.stem.dir===side&&(A.flags||B.flags))continue;   // that side holds their beam, not a tie
           let hit=0,tot=0,thick=0;
           for(let x=Math.round(A.x+0.25*dx);x<=B.x-0.25*dx;x+=Math.max(1,Math.round(s/6))){
             tot++;let c=0;for(let k=0.3*s;k<=1.7*s;k++){if(at(x,Math.round(A.y+side*k)))c++;}
@@ -1717,15 +1766,16 @@ const OMR=(()=>{
       if(key>0)SHARPS.slice(0,key).forEach(l=>keyAlt[l]=1);if(key<0)FLATS.slice(0,-key).forEach(l=>keyAlt[l]=-1);
       // split into bars
       const segs=[];
-      res.rows.forEach(r=>{
+      // (each bar remembers which printed line it was on and whether a double bar closes it, so the Sheet view can copy the layout)
+      res.rows.forEach((r,ri)=>{
         if(!useSt(r[0].st))return;
-        let seg={ev:[],endX:null};
+        let seg={ev:[],endX:null,row:ri},first=true;
         r.forEach(it=>{
           if(excluded.has(it))return;
-          if(it.kind==='bar'){seg.endX=it.x;if(seg.ev.length)segs.push(seg);seg={ev:[],endX:null};}
+          if(it.kind==='bar'){seg.endX=it.x;seg.dbl=!!it.dbl;if(seg.ev.length){seg.first=first;first=false;segs.push(seg);}else if(it.dbl&&segs.length&&segs[segs.length-1].row===ri)segs[segs.length-1].dbl=true;seg={ev:[],endX:null,row:ri};}
           else seg.ev.push(it);
         });
-        if(seg.ev.length){seg.endX=r[r.length-1].x+r[0].st.sp*2;segs.push(seg);}
+        if(seg.ev.length){seg.endX=r[r.length-1].x+r[0].st.sp*2;seg.first=first;segs.push(seg);}
       });
       const sums=segs.map(sg=>sg.ev.reduce((a,e)=>a+(e.kind==='rest'?(e.len||(e.whole?0:48)):e.len),0));
       if(opt.meter==='auto'){
@@ -1740,7 +1790,7 @@ const OMR=(()=>{
             if(a>b)meterId='6/8';}}
       }else meterId=opt.meter;
       const m=meterId?meterById(meterId):null,BL=m?m.num*WHOLE/m.den:0;
-      let t=0;
+      let t=0;var layout=BL?{key,sys:[],dbl:[],pickup:false}:null;
       segs.forEach((sg,si)=>{
         const acc={};let sum=0;
         const evs=sg.ev.map(e=>{
@@ -1748,9 +1798,9 @@ const OMR=(()=>{
           const clef=clefOf(e.st);
           let alt=keyAlt[stepLetter(e.step,clef)]||0;
           if(e.acc){alt=e.acc===2?0:e.acc;acc[e.step]=alt;}else if(segs.length>1&&acc[e.step]!==undefined)alt=acc[e.step];
-          let n=stepSemi(e.step,clef)+alt;
+          let n=stepSemi(e.step,clef)+alt;const d=(clef==='bass'?18:30)+e.step;   // d: the printed letter / line (E4 = 30)
           const ch=e.chordLow?[n].concat(e.chordLow.map(o=>stepSemi(o.step,clef)+(keyAlt[stepLetter(o.step,clef)]||0))).sort((x,y)=>y-x):null;   // chord: top note first
-          return {e,len:e.len,n,ch};
+          return {e,len:e.len,n,ch,d};
         });
         evs.forEach(v=>sum+=v.len);
         // triplets ("3" over three notes): the bar is too long by a third of three equal notes in a row → squeeze them
@@ -1769,8 +1819,10 @@ const OMR=(()=>{
             evs[gi].pad=BL-sum;
           }
         }
-        evs.forEach(v=>{const prev=out[out.length-1];if(!v.rest){if(v.e.tieFrom&&prev&&prev.it===v.e.tieFrom&&prev.n===v.n&&prev.t+prev.len===tt)prev.len+=v.len;else out.push({t:tt,len:v.len,n:v.n,it:v.e,ch:v.ch});}tt+=v.len+(v.pad||0);});
-        if(BL){const used=tt-barStart;t=barStart+(used<=BL*1.1?BL:Math.ceil(used/BL)*BL);}else t=tt;
+        evs.forEach(v=>{const prev=out[out.length-1];if(!v.rest){if(v.e.tieFrom&&prev&&prev.it===v.e.tieFrom&&prev.n===v.n&&prev.t+prev.len===tt)prev.len+=v.len;else out.push({t:tt,len:v.len,n:v.n,it:v.e,ch:v.ch,d:v.d});}tt+=v.len+(v.pad||0);});
+        if(BL){const used=tt-barStart;t=barStart+(used<=BL*1.1?BL:Math.ceil(used/BL)*BL);
+          const b0=Math.round(barStart/BL);if(sg.first&&b0>0)layout.sys.push(b0);if(sg.dbl)layout.dbl.push(Math.round(t/BL)-1);if(si===0&&segs.length>1&&sum<BL)layout.pickup=true;}
+        else t=tt;
       });
     }
     // fit into the ocarina's range (B3–F5): shift by octaves, then fold stragglers
@@ -1783,9 +1835,11 @@ const OMR=(()=>{
     }
     let folded=0;
     out.forEach(o=>{
-      if(o.ch&&!inR(o.n+bestK)){const alt=o.ch.find(v=>inR(v+bestK));if(alt!==undefined)o.n=alt;}
-      o.n+=bestK;while(o.n<-3){o.n+=12;o.f=1;}while(o.n>15){o.n-=12;o.f=1;}if(o.f)folded++;});
-    return {notes:out,meterId,meterAuto,shift:bestK,folded,staffMode:typeof staffMode==='undefined'?null:staffMode,used:typeof usedStaves==='undefined'?null:new Set(usedStaves)};
+      if(o.ch&&!inR(o.n+bestK)){const alt=o.ch.find(v=>inR(v+bestK));if(alt!==undefined&&alt!==o.n){o.n=alt;o.d=undefined;}}
+      o.n+=bestK;if(o.d!==undefined)o.d+=Math.round(bestK*7/12);
+      while(o.n<-3){o.n+=12;o.f=1;if(o.d!==undefined)o.d+=7;}while(o.n>15){o.n-=12;o.f=1;if(o.d!==undefined)o.d-=7;}if(o.f)folded++;});
+    if(typeof layout!=='undefined'&&layout){let k=layout.key+7*bestK;k=((k%12)+12)%12;if(k>6||(k===6&&layout.key<0))k-=12;layout.key=k;}   // key signature after transposing
+    return {notes:out,meterId,meterAuto,shift:bestK,folded,layout:typeof layout==='undefined'?null:layout,staffMode:typeof staffMode==='undefined'?null:staffMode,used:typeof usedStaves==='undefined'?null:new Set(usedStaves)};
   }
   function pickButtonNote(it,clef){
     const cands=[];
@@ -1934,7 +1988,14 @@ function applyImp(append){
     if(a.meterId)S.meters=[{bar:0,id:a.meterId}];
     S.bars=1;rebuild();
   }
-  const made=a.notes.map(o=>[insertNote(off+o.t,o.len,o.n),o.it]);made.forEach(([x,it])=>{if(S.notes.includes(x)&&it)srcOf.set(x,it);});
+  {const L=a.layout,ob=barAt(off).b;   // keep the picture's line breaks, double bars and key so the Sheet view mirrors it
+    if(L){const prev=append&&S.layout?S.layout:{from:ob,sys:[],dbl:[],pickup:false,keys:[]};
+      if(append&&!S.layout)prev.from=ob;else if(append)prev.sys.push(ob);
+      prev.sys=prev.sys.concat(L.sys.map(b=>b+ob));prev.dbl=prev.dbl.concat(L.dbl.map(b=>b+ob));
+      if(!append)prev.pickup=L.pickup;prev.keys=prev.keys.filter(k=>k.bar<ob).concat([{bar:ob,k:L.key}]);
+      S.layout=cleanLayout(prev);}
+    else if(!append)S.layout=null;}
+  const made=a.notes.map(o=>{const x=insertNote(off+o.t,o.len,o.n);if(x&&o.d!==undefined){x.sd=o.d;x.sn=o.n;}return [x,o.it];});made.forEach(([x,it])=>{if(S.notes.includes(x)&&it)srcOf.set(x,it);});
   let e=0;S.notes.forEach(x=>e=Math.max(e,x.t+x.len));while(TOTAL<e&&S.bars<128){S.bars++;rebuild();}
   if(!append){const b=barAt(Math.max(0,e-1));while(S.bars>b.b+1){S.bars--;rebuild();}}
   sel=null;selBar=append?barAt(off).b:0;cursor=e;changed();
