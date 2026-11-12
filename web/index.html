@@ -21,6 +21,11 @@
   #micHud{top:160px;left:50%;right:auto;transform:translateX(-50%);display:none;pointer-events:auto;background:rgba(8,12,30,.88);border:1px solid rgba(160,190,255,.35);border-radius:10px;padding:6px 10px;font-size:14px;text-align:center;max-width:92vw;z-index:6;line-height:1.7}
   body.pan #micHud{top:116px}
   #mic.on{background:rgba(93,255,138,.2);border-color:#5dff8a}
+  .micSens{display:flex;align-items:center;gap:8px;justify-content:center;font-size:12px;opacity:.9;margin-top:2px}
+  .micSens input{width:140px;accent-color:#5dff8a}
+  .micLvl{position:relative;height:6px;width:200px;max-width:70vw;margin:4px auto 2px;background:rgba(255,255,255,.12);border-radius:3px;overflow:hidden}
+  .micLvl i{position:absolute;left:0;top:0;bottom:0;width:0;background:#5dff8a;border-radius:3px}
+  .micLvl b{position:absolute;top:-2px;bottom:-2px;width:2px;background:#ffcf5d}
   #info{top:132px;font-size:14px;min-height:22px;display:flex;justify-content:center;gap:12px;align-items:baseline}
   #readout{font-size:20px;font-weight:700;color:#ffd84a;min-width:70px}
   #msg{opacity:.85;font-size:13px}
@@ -943,8 +948,13 @@ const micBtn=$('mic'),micHud=$('micHud');
 let micOn=false,micStream=null,micSrc=null,micAn=null,micBuf=null,micRaf=0,anyOct=true;
 let heard={n:null,since:0,armed:true,quiet:0};
 try{anyOct=localStorage.getItem('ocAnyOct')!=='0';}catch(_){}
+// microphone sensitivity 0–100: sets the loudness a sound needs before its pitch is read (50 = original level, higher picks up quieter sound)
+let micSens=50,lastRms=0,micTxt=null,micLvlI=null,micLvlB=null;
+try{const v=parseFloat(localStorage.getItem('ocMicSens'));if(v>=0&&v<=100)micSens=v;}catch(_){}
+const micGate=()=>0.012*Math.pow(10,(50-micSens)/35);
+const lvlPos=r=>Math.max(0,Math.min(1,(Math.log10(Math.max(r,1e-5))+4)/3.3));   // rms → 0..1 on a log scale
 function yin(buf,sr){   // fundamental frequency (Hz) of a frame, or 0 when there is no clear pitch
-  let rms=0;for(let i=0;i<buf.length;i++)rms+=buf[i]*buf[i];rms=Math.sqrt(rms/buf.length);if(rms<0.012)return 0;
+  let rms=0;for(let i=0;i<buf.length;i++)rms+=buf[i]*buf[i];rms=Math.sqrt(rms/buf.length);lastRms=rms;if(rms<micGate())return 0;
   const W=Math.floor(buf.length/2),minT=Math.floor(sr/2600),maxT=Math.min(W-1,Math.floor(sr/70)),d=new Float32Array(maxT+2);
   for(let t=minT;t<=maxT+1;t++){let s=0;for(let i=0;i<W;i++){const x=buf[i]-buf[i+t];s+=x*x;}d[t]=s;}
   let run=0;const cm=new Float32Array(maxT+2);cm[minT]=1;
@@ -965,9 +975,11 @@ function pAdvance(){
 function hudShow(s){   // s: semitones (fractional) or null
   if(!micOn&&!micHud.dataset.keep){micHud.style.display='none';return;}
   micHud.style.display='block';
-  if(s===null){micHud.innerHTML='🎤 listening…'+(practice&&targetN()!==null?' · play <b>'+noteName(targetN())+'</b>':'');return;}
+  if(micLvlI){micLvlI.style.width=(lvlPos(lastRms)*100)+'%';micLvlI.style.background=lastRms>=micGate()?'#5dff8a':'rgba(255,255,255,.35)';}
+  const out=micTxt&&micTxt.isConnected?micTxt:micHud;
+  if(s===null){out.innerHTML='🎤 listening…'+(practice&&targetN()!==null?' · play <b>'+noteName(targetN())+'</b>':'');return;}
   const r=Math.round(s),c=Math.round((s-r)*100),t=targetN(),ok=matches(s,t);
-  micHud.innerHTML='🎤 <b>'+noteName(r)+'</b> <span style="opacity:.7">'+(c>=0?'+':'')+c+'¢</span>'+(t!==null?' · target '+noteName(t)+(ok?' <span style="color:#5dff8a">✓</span>':''):'');
+  out.innerHTML='🎤 <b>'+noteName(r)+'</b> <span style="opacity:.7">'+(c>=0?'+':'')+c+'¢</span>'+(t!==null?' · target '+noteName(t)+(ok?' <span style="color:#5dff8a">✓</span>':''):'');
 }
 // one pitch reading → Follow logic. A note counts after it has been steady a moment; the same pitch again needs a break first
 function onPitch(s,now){
@@ -984,6 +996,15 @@ async function micStart(){
     micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
   }catch(e){micFallback();return;}
   micSrc=ac.createMediaStreamSource(micStream);micAn=ac.createAnalyser();micAn.fftSize=2048;micSrc.connect(micAn);micBuf=new Float32Array(micAn.fftSize);
+  delete micHud.dataset.keep;
+  micHud.innerHTML='<div id="micTxt"></div><div class="micLvl" title="Input level (yellow line = sensitivity threshold)"><i></i><b></b></div>'+
+    '<label class="micSens">Sensitivity <input type="range" id="micSensR" min="0" max="100" step="1"> <span id="micSensV"></span></label>';
+  micTxt=$('micTxt');micLvlI=micHud.querySelector('.micLvl i');micLvlB=micHud.querySelector('.micLvl b');
+  const sr=$('micSensR'),sv=$('micSensV');
+  const showSens=()=>{sv.textContent=Math.round(micSens);micLvlB.style.left='calc('+(lvlPos(micGate())*100)+'% - 1px)';};
+  sr.value=micSens;showSens();
+  sr.addEventListener('input',()=>{micSens=+sr.value;showSens();try{localStorage.setItem('ocMicSens',String(micSens));}catch(_){}});
+  ['keydown','keyup'].forEach(k=>sr.addEventListener(k,e=>e.stopPropagation()));
   micOn=true;micBtn.classList.add('on');heard={n:null,since:0,armed:true,quiet:0};hudShow(null);
   const loop=()=>{if(!micOn)return;micAn.getFloatTimeDomainData(micBuf);const f=yin(micBuf,ac.sampleRate),s=f?semiOfHz(f):null;
     onPitch(s,performance.now());hudShow(s);micRaf=requestAnimationFrame(loop);};loop();
