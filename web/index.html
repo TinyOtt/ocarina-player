@@ -48,6 +48,7 @@
   .wk.tgt,.bk.tgt{box-shadow:inset 0 0 0 3px #ffd84a,0 0 12px #ffd84a;animation:tg 1s infinite alternate}@keyframes tg{to{box-shadow:inset 0 0 0 3px #ffd84a,0 0 2px #ffd84a}}
   .wk.act{background:#ffd84a}.bk.act{background:#ff9f4a;color:#000}
   .ck{display:none;font-style:normal;font-size:10px;opacity:.7}#piano.hints .ck{display:block}
+  .cb{font-size:10px;font-weight:700;line-height:1.2;margin-bottom:2px;padding:0 3px;border-radius:4px;background:rgba(10,14,30,.85);white-space:nowrap}
   #rollbody{display:flex;flex:1;min-height:0;padding:0 8px 8px;overflow:hidden}
   #labcol{flex:none;width:44px}
   .lab{height:18px;line-height:18px;font-size:11px;font-weight:600;text-align:right;padding-right:4px;box-sizing:border-box;white-space:nowrap}
@@ -637,6 +638,11 @@ BL.forEach(([n,i])=>{
   const d=document.createElement('div');d.className='bk';d.dataset.n=n;d.style.left=((i+1)*100/12-2.6)+'%';d.style.width='5.2%';
   d.innerHTML='<i class="ck">'+PKREV[n]+'</i>';pianoEl.appendChild(d);keyEls[n]=d;
 });
+// each key also shows the controller button(s) that play it, in the current layout
+function renderPianoLabels(){Object.keys(keyEls).forEach(n=>{const d=keyEls[n];let c=d.querySelector('.cb');
+  if(!c){c=document.createElement('span');c.className='cb';d.insertBefore(c,d.firstChild);}
+  const o=nOv(+n);c.textContent=glyph(+n);c.style.color=hex(NOTES[o.b].color);});}
+renderPianoLabels();
 const kbPtr=new Map();
 function kbStart(pid,n){
   const st=kbPtr.get(pid),ov=nOv(n);
@@ -1113,9 +1119,10 @@ function applyScheme(id){
     g.grp.remove(old);old.material.map.dispose();old.material.dispose();g.grp.add(nw);g.grp.userData.g1=nw;});
   chips.forEach(d=>{const cm=d._cm,col='#'+NOTES[cm.b].color.toString(16).padStart(6,'0');
     d.innerHTML=CHART_NAMES[d._k]+'<small style="color:'+col+'">'+NOTES[cm.b].btn+(cm.y>0?'↑':cm.y<0?'↓':'')+'</small>';});
-  renderRollLabels();
+  renderRollLabels();renderPianoLabels();
   $('zb').innerHTML=sc.flat+'<small>flat</small>';$('rb').innerHTML=sc.sharp+'<small>sharp</small>';
-  $('scheme').value=id;renderSeq();rollDirty=true;if(typeof IM!=='undefined'&&IM)drawImp();
+  $('scheme').value=id;renderSeq();rollDirty=true;info();   // every view shows the new buttons
+  if(typeof sheetOpen!=='undefined'&&sheetOpen)drawSheet();if(typeof IM!=='undefined'&&IM)drawImp();
 }
 $('scheme').addEventListener('change',e=>applyScheme(e.target.value));
 /* ===== 📷 Import: reads song charts from pictures, entirely on this device (no AI, nothing uploaded) ===== */
