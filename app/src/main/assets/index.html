@@ -1441,7 +1441,7 @@ const OMR=(()=>{
       const ow=hw+tl+tr;if(ow<0.85*s||ow>2.1*s)continue;
       if(items.some(it=>it.kind==='head'&&Math.abs(it.x-x)<(it.hollow?1.3:0.7)*s&&Math.abs(it.y-y)<0.6*s))continue;
       if(items.some(it=>it.kind==='head'&&!it.hollow&&Math.abs(it.x-x)<1.5*s&&Math.abs(it.y-y)>=0.7*s&&Math.abs(it.y-y)<4.2*s))continue;
-      items.push({kind:'head',hollow:true,x,y,w:ow,h:hh+0.3*s,x0:hl.x0-tl,x1:hl.x1+tr,st,hr:hw/hh,needPartner});
+      items.push({kind:'head',hollow:true,x,y,w:ow,h:hh+0.3*s,x0:hl.x0-tl,x1:hl.x1+tr,hx0:hl.x0,hx1:hl.x1,hy0:hl.y0,hy1:hl.y1,st,hr:hw/hh,needPartner});
     }
     }
     const atO=(x,y)=>x>=0&&y>=0&&x<W&&y<H&&(ctx.faint?ctx.soft:ctx.ink)[y*W+x];
@@ -1545,7 +1545,11 @@ const OMR=(()=>{
       const s=n.st.sp;let stem=null;
       if(items.some(it=>it.kind==='bar'&&it.st===n.st&&Math.abs(it.x-n.x)<0.6*s)){n.drop=true;continue;}   // nothing real sits on a bar line
       const barXs=items.filter(it=>it.kind==='bar'&&it.st===n.st).map(it=>it.x);
-      if(n.hollow&&barXs.some(bx=>(bx>n.x0-0.2*s&&bx<n.x0+0.3*s)||(bx>n.x1-0.3*s&&bx<n.x1+0.2*s))){n.drop=true;continue;}   // a gap closed off by a bar line (and a tie), not a note
+      if(n.hollow&&barXs.some(bx=>(bx>n.hx0-0.25*s&&bx<n.hx0+0.1*s)||(bx>n.hx1-0.1*s&&bx<n.hx1+0.25*s))){   // a gap walled in by a bar line and a tie, not a note's ring?
+        const cx=Math.round((n.hx0+n.hx1)/2),wide=(y0,dy)=>{let y=y0;while(y>0&&y<H-1&&!ctx.ink[y*W+cx]&&Math.abs(y-y0)<0.5*s)y+=dy;if(!ctx.ink[y*W+cx])return false;
+          let l=cx,r=cx;while(l>0&&ctx.ink[y*W+l-1]&&cx-l<3*s)l--;while(r<W-1&&ctx.ink[y*W+r+1]&&r-cx<3*s)r++;return r-l>2.2*s&&!st0line(y);};
+        const st0line=y=>n.st.ys.some(ly=>Math.abs(ly-y)<=Math.max(1.5,n.st.thick));   // staff lines don't count
+        if(wide(n.hy0-1,-1)||wide(n.hy1+1,1)){n.drop=true;continue;}}
       const xs=[];for(let x=Math.round(Math.min(n.x1-0.6*s,n.x+0.15*s));x<=Math.max(n.x1+(n.hollow?0.6:0.3)*s,n.x+0.9*s);x++)xs.push(x);for(let x=Math.round(Math.min(n.x0-0.3*s,n.x-0.9*s));x<=Math.max(n.x0+0.6*s,n.x-0.15*s);x++)xs.push(x);
       for(let i=xs.length-1;i>=0;i--)if(barXs.some(bx=>Math.abs(bx-xs[i])<=0.3*s))xs.splice(i,1);   // a bar line is nobody's stem
       for(const x of xs)for(let y=Math.round(n.y-0.5*s);y<=n.y;y++){const r=vrun(x,y);if(r&&n.y-r[0]>=2.2*s&&(!stem||n.y-r[0]>stem.len))stem={x,end:r[0],dir:-1,len:n.y-r[0]};}
@@ -1652,6 +1656,21 @@ const OMR=(()=>{
       if(items.some(it=>it.kind==='bar'&&it.st===st&&Math.abs(it.x-x)<0.8*s))continue;
       items.push({kind:'rest',len:q,x,y:(p.y0+p.y1)/2,w:p.w,h:p.h,st});
     }
+    // tuplet numbers: a small free-standing digit-sized shape near the notes (checked against the rhythm when the notes are put together)
+    res.tripMarks=[];
+    {const live=heads.filter(h=>!h.drop),restIt=items.filter(i=>i.kind==='rest');
+      for(const p of parts){const x=(p.x0+p.x1)/2,st=staffFor(staves,x,p.cy,5);if(!st)continue;const s=st.sp;
+        if(p.h<0.7*s||p.h>1.9*s||p.w<0.35*s||p.w>1.4*s)continue;const fill=p.area/(p.w*p.h);if(fill<0.15||fill>0.7)continue;
+        if(x<clefX.get(st)+0.5*s||accBoxes.has(p))continue;
+        if(live.some(h=>h.x1>p.x0-0.2*s&&h.x0<p.x1+0.2*s&&h.y+0.6*s>p.y0&&h.y-0.6*s<p.y1))continue;
+        if(restIt.some(r=>Math.abs(r.x-x)<0.5*s&&Math.abs(r.y-p.cy)<s))continue;
+        res.tripMarks.push({st,x,y:p.cy});}
+      // a bracket with the number in it: thin and wide, with a digit-tall bump in the middle (a tie or slur is thin all along)
+      for(const p of parts){const x=(p.x0+p.x1)/2,st=staffFor(staves,x,p.cy,5);if(!st)continue;const s=st.sp;
+        if(p.w<1.5*s||p.w>12*s||p.h<0.5*s||p.h>2*s||p.area/p.w>0.4*s)continue;
+        if(live.some(h=>h.x1>p.x0&&h.x0<p.x1&&h.y+0.5*s>p.y0&&h.y-0.5*s<p.y1))continue;
+        let span=0;for(let xx=Math.round(x-0.15*p.w);xx<=x+0.15*p.w;xx++){let a=-1,b=-1;for(let y=p.y0;y<=p.y1;y++)if(plab[y*W+xx]===p.id){if(a<0)a=y;b=y;}if(a>=0)span=Math.max(span,b-a);}
+        if(span>=0.6*s)res.tripMarks.push({st,x,y:p.cy});}}
     // key signature: sharps / flats between the clef and the first note of the first staff
     let keyS=0,keyF=0;
     const st0=staves[0];
@@ -1737,6 +1756,8 @@ const OMR=(()=>{
         // triplets ("3" over three notes): the bar is too long by a third of three equal notes in a row → squeeze them
         for(let guard=0;BL&&sum>BL&&guard<4;guard++){let done=false;
           for(let i=0;i+2<evs.length&&!done;i++){const L=evs[i].len;if(L%3||evs[i].trip||evs[i+1].len!==L||evs[i+2].len!==L||evs[i+1].trip||evs[i+2].trip)continue;
+            const g=evs.slice(i,i+3).map(v=>v.e),s=g[0].st.sp,gx0=Math.min(...g.map(e=>e.x)),gx1=Math.max(...g.map(e=>e.x));
+            if(!(res.tripMarks||[]).some(m=>m.st===g[0].st&&m.x>gx0-0.8*s&&m.x<gx1+0.8*s))continue;   // needs a "3" printed by the group
             if(sum-L>=BL){for(let k=i;k<i+3;k++){evs[k].len=L*2/3;evs[k].trip=1;}sum-=L;done=true;}}
           if(!done)break;}
         const barStart=t;let tt=t;
